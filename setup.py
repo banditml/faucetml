@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="FaucetML",
+    name="faucetml",
     version="0.0.1",
     author="Edoardo Conti, Lionel Vital",
     author_email="edoardo.conti@gmail.com",
@@ -12,6 +12,7 @@ setuptools.setup(
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/econti/FaucetML",
+    download_url="https://github.com/econti/FaucetML/archive/v0.0.1.tar.gz",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
