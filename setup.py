@@ -20,5 +20,10 @@ setuptools.setup(
         "Operating System :: OS Independent",
     ],
     python_requires=">=3.6",
-    install_requires=["pandas>0.20.0", "google-cloud-bigquery>=1.22.0", "retry>=0.9.2"],
+    install_requires=[
+        "pandas>0.20.0",
+        "google-cloud-bigquery>=1.22.0",
+        "retry>=0.9.2",
+        "feast>=0.4.4",
+    ],
 )
