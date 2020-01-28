@@ -29,7 +29,7 @@ Many training datasets are too large to fit in memory, but model training would 
 
 
 ### Examples
-See `examples/` for detailed ipython notebook examples on how to use Faucet.
+See [examples/](https://github.com/econti/faucetml/tree/master/examples) for detailed ipython notebook examples on how to use Faucet.
 
 ```
 # initialize the client
