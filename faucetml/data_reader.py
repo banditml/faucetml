@@ -4,6 +4,7 @@ import time
 from typing import Dict, Generator, List, NoReturn, Tuple
 import queue
 
+import feast
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from google.cloud.bigquery.job import QueryJob
@@ -20,10 +21,9 @@ class DataStore:
     bigquery = "bigquery"
 
 
-def get_data_reader(
+def get_batch_reader(
     datastore: str,
     credential_path: str,
-    hash_on_feature: str,
     table_name: str,
     ds: str = None,
     epochs: int = 1,
@@ -33,14 +33,15 @@ def get_data_reader(
     table_sample_percent: float = None,
     test_split_percent: float = None,
     skip_small_batches: bool = True,
+    faucet_core_url: str = None,
+    faucet_batch_serving_url: str = None,
+    faucet_project: str = None,
 ):
     """Get a DataReader object.
 
     Args:
         datastore: Datastore fetching data from (i.e. "bigquery").
         credential_path: Path to credentials for datastore.
-        hash_on_feature: Feature to hash on for random sampling. Used to split
-            dataset into training and test.
         table_name: Name of table to fetch data from.
         ds: Date for table partition.
         epochs: Number of epochs to train for.
@@ -50,6 +51,11 @@ def get_data_reader(
         exclude_features: Features to exclude in training.
         table_sample_percent: Percent of table to use for training and eval.
         test_split_percent: Percent of table sample to use for eval.
+        faucet_core_url: Core URL of feature & preprocessing store. Used when
+            features are stored in a remote faucet cluster.
+        faucet_batch_serving_url: Serving URL for batch features & preprocessing.
+        faucet_project: Namespace in faucet where the features & preprocessing
+            specs are stored.
 
     Returns:
         DataReader object.
@@ -60,7 +66,6 @@ def get_data_reader(
         return BigQueryReader(
             datastore,
             credential_path,
-            hash_on_feature,
             table_name,
             ds,
             epochs,
@@ -70,9 +75,16 @@ def get_data_reader(
             table_sample_percent,
             test_split_percent,
             skip_small_batches,
+            faucet_core_url,
+            faucet_batch_serving_url,
+            faucet_project,
         )
     else:
         raise Exception("Datastore {} not supported".format(kwargs["datastore"]))
+
+
+def get_online_reader():
+    pass
 
 
 class DataReader:
@@ -80,7 +92,6 @@ class DataReader:
         self,
         datastore: str,
         credential_path: str,
-        hash_on_feature: str,
         table_name: str,
         ds: str,
         epochs: int,
@@ -90,20 +101,28 @@ class DataReader:
         table_sample_percent: float,
         test_split_percent: float,
         skip_small_batches: bool,
+        faucet_core_url: str,
+        faucet_batch_serving_url: str,
+        faucet_project: str,
     ):
-        # Intialize client & set table properties
+        # Intialize clients & set table properties
         self.client = self._get_client(credential_path)
         self.table_name = table_name
         self.exclude_features = exclude_features
+        if faucet_core_url is not None:
+            assert faucet_batch_serving_url is not None
+            assert faucet_project is not None
+            self.feast_client = feast.Client(
+                core_url=faucet_core_url, serving_url=faucet_batch_serving_url
+            )
+            self.feast_client.set_project(faucet_project)
 
         # Figure out sampling + train & test
         self.max_row_filter = table_sample_percent / 100
         self.train_set_filter = self.max_row_filter * (1 - test_split_percent / 100)
 
         # Generate queries for the training & test set
-        self.train_query, self.eval_query = self._build_train_and_eval_queries(
-            hash_on_feature, ds
-        )
+        self.train_query, self.eval_query = self._build_train_and_eval_queries(ds)
 
         # Create query jobs to create temp tables (non-blocking)
         self.train_query_job = self._create_tmp_table(train=True)
@@ -126,9 +145,7 @@ class DataReader:
     def _get_client(self, credential_path: str):
         raise NotImplementedError
 
-    def _build_train_and_eval_queries(
-        self, hash_on_feature: str, ds: str = None
-    ) -> str:
+    def _build_train_and_eval_queries(self, ds: str = None) -> str:
         raise NotImplementedError
 
     def _create_tmp_table(self, train: bool = True):
@@ -288,7 +305,6 @@ class BigQueryReader(DataReader):
         self,
         datastore: str,
         credential_path: str,
-        hash_on_feature: str,
         table_name: str,
         ds: str,
         epochs: int,
@@ -298,11 +314,13 @@ class BigQueryReader(DataReader):
         table_sample_percent: float,
         test_split_percent: float,
         skip_small_batches: bool,
+        faucet_core_url: str,
+        faucet_batch_serving_url: str,
+        faucet_project: str,
     ):
         super().__init__(
             datastore,
             credential_path,
-            hash_on_feature,
             table_name,
             ds,
             epochs,
@@ -312,6 +330,9 @@ class BigQueryReader(DataReader):
             table_sample_percent,
             test_split_percent,
             skip_small_batches,
+            faucet_core_url,
+            faucet_batch_serving_url,
+            faucet_project,
         )
 
     def _get_client(self, credential_path: str):
@@ -321,9 +342,7 @@ class BigQueryReader(DataReader):
         )
         return bigquery.Client(credentials=credentials, project=credentials.project_id)
 
-    def _build_train_and_eval_queries(
-        self, hash_on_feature: str, ds: str = None
-    ) -> str:
+    def _build_train_and_eval_queries(self, ds: str = None) -> str:
         base_query = f"select * from `{self.table_name}` "
 
         if ds is not None:
@@ -333,9 +352,8 @@ class BigQueryReader(DataReader):
 
         # TODO: right now smallest portion of dataset you can get is 1/1000th
         # maybe make this a user input if it causes problems.
-        base_query += f"""
-        MOD(ABS(FARM_FINGERPRINT(cast(features.{hash_on_feature} as string))), 1000) / 1000
-        """
+        base_query += "MOD(ABS(FARM_FINGERPRINT(cast(hash_on as string))), 1000) / 1000"
+
         train_set_query = base_query + f" < {self.train_set_filter};"
         eval_set_query = (
             base_query + f" between {self.train_set_filter} and {self.max_row_filter}"

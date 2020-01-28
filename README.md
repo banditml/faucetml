@@ -1,7 +1,8 @@
 
-# <img src="https://webstockreview.net/images/faucet-clipart-cartoon-3.png" width="50">         Faucet ML
 
-Faucet ML is a Python package that enables high speed mini-batch data reading from common data warehouses for machine learning model training.
+# Faucet ML
+
+Faucet ML is a Python package that enables high speed mini-batch data reading & preprocessing from common data warehouses for machine learning model training.
 
 Faucet ML is designed for cases where:
 * Datasets are too large to fit into memory
@@ -17,8 +18,6 @@ pip install faucetml
 - [ ] Snowflake (soon)
 - [ ] Amazon Redshift (soon)
 
-Suggestions for other DBs to support? Open an issue and let us know.
-
 
 ### More about Faucet
 Many training datasets are too large to fit in memory, but model training would benefit from using all of the training data. Naively issuing 1 query per mini-batch of data is unnecessarily expensive due round-trip network costs. Faucet is a library that solves these issues by:
@@ -30,45 +29,24 @@ Many training datasets are too large to fit in memory, but model training would 
 
 
 ### Examples
+See `examples/` for detailed ipython notebook examples on how to use Faucet.
 
-Using Faucet is meant to be simple and painless.
-
-#### BigQuery
-
-Faucet takes in a BigQuery table with the following schema:
 ```
-features <STRUCT>
-labels <STRUCT>
-```
-For example:
-```
-|                      features                    |     labels     |
-|--------------------------------------------------|----------------|
-| {"age": 16, "ctr": 0.02, , "noise": 341293, ...} | {"clicked": 0} |
-```
-
-Initialize the data reader:
-```
-from faucetml.data_reader import get_data_reader
-
-data_reader = get_data_reader(
+# initialize the client
+batch_cli = get_batch_reader(
     datastore="bigquery",
-    credential_path="path/to/bigquery/creds.json",
-    hash_on_feature="noise", # feature used to hash for random sampling
-    table_name="project.dataset.training_table",
-    ds="2020-01-21",
+    credential_path="bq_creds.json",
+    table_name="my_training_table",
+    ds="2020-01-20",
     epochs=2,
-    batch_size=1024,
-    chunk_size=1024 * 100,
-    exclude_features=["noise"],
-    table_sample_percent=100,
+    batch_size=1024
+    chunk_size=1024 * 10000,
     test_split_percent=20,
-    skip_small_batches=False,
 )
 ```
 
-Start reading data and training:
 ```
+# train & test
 for epoch in range(2):
 
     # training loop
@@ -86,10 +64,9 @@ for epoch in range(2):
         batch = data_reader.get_batch(eval=True)
 ```
 
-
 ### Future features
 - [ ] Support more data warehouses
-- [ ] Add preprocessing to data reading
-- [ ] Support reading features from Feast
+- [ ] Add feature imputation & preprocessing to data reading
+- [ ] Support reading features from [Feast](https://github.com/gojek/feast)
 
 Suggestions for other features? Open an issue and let us know.
