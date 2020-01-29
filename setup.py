@@ -5,14 +5,14 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="faucetml",
-    version="0.0.2",
+    version="0.0.3",
     author="Edoardo Conti, Lionel Vital",
     author_email="edoardo.conti@gmail.com",
-    description="Simple, high-speed batch data reader for ML applications.",
+    description="Simple, high-speed batch data reader & preprocessor for ML applications.",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/econti/FaucetML",
-    download_url="https://github.com/econti/FaucetML/archive/v0.0.1.tar.gz",
+    download_url="https://github.com/econti/FaucetML/archive/v0.0.3.tar.gz",
     packages=setuptools.find_packages(),
     classifiers=[
         "Programming Language :: Python :: 3",
@@ -22,8 +22,8 @@ setuptools.setup(
     python_requires=">=3.6",
     install_requires=[
         "pandas>0.20.0",
-        "google-cloud-bigquery>=1.22.0",
         "feast>=0.4.4",
+        "google-cloud-bigquery",
         "retry",
         "torch",
         "scipy",
