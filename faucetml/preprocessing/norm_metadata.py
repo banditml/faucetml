@@ -22,13 +22,13 @@ logger = get_logger(__name__)
 def _get_single_feature_norm_metadata(
     feature_name: str,
     feature_value_list: List,
-    skip_preprocessing: bool,
     feature_overrides: Dict[str, str],
     max_unique_enum_values: int,
     quantile_size: int,
     quantile_k2_threshold: int,
     skip_box_cox: int,
     skip_quantiles: int,
+    skip_preprocessing: bool,
 ):
     logger.info("Got feature: {}".format(feature_name))
     feature_override = None
@@ -63,13 +63,13 @@ def _get_single_feature_norm_metadata(
 def get_norm_metadata_dict(
     data_df: pd.DataFrame,
     exclude_features: List[str],
-    skip_preprocessing: bool,
     feature_overrides: Dict[str, str],
     max_unique_enum_values: int,
     quantile_size: int,
     quantile_k2_threshold: int,
     skip_box_cox: int,
     skip_quantiles: int,
+    skip_preprocessing: bool,
 ) -> Dict:
     exclude_features = set(exclude_features)
     output = {}
@@ -80,12 +80,12 @@ def get_norm_metadata_dict(
             output[col] = _get_single_feature_norm_metadata(
                 col,
                 list(data),
-                skip_preprocessing,
                 feature_overrides,
                 max_unique_enum_values,
                 quantile_size,
                 quantile_k2_threshold,
                 skip_box_cox,
                 skip_quantiles,
+                skip_preprocessing,
             )
     return output
