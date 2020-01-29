@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setuptools.setup(
     name="faucetml",
-    version="0.0.1",
+    version="0.0.2",
     author="Edoardo Conti, Lionel Vital",
     author_email="edoardo.conti@gmail.com",
     description="Simple, high-speed batch data reader for ML applications.",
@@ -23,7 +23,9 @@ setuptools.setup(
     install_requires=[
         "pandas>0.20.0",
         "google-cloud-bigquery>=1.22.0",
-        "retry>=0.9.2",
         "feast>=0.4.4",
+        "retry",
+        "torch",
+        "scipy",
     ],
 )
