@@ -10,7 +10,16 @@ from google.oauth2 import service_account
 from google.cloud.bigquery.job import QueryJob
 import pandas as pd
 from retry import retry
+import torch
 
+from .preprocessing.normalization import (
+    get_num_output_features,
+    NormalizationParameters,
+    sort_features_by_normalization,
+)
+from .preprocessing.norm_metadata import get_norm_metadata_dict
+from .preprocessing.preprocessor_net import Preprocessor
+from .preprocessing.sparse_to_dense import PandasSparseToDenseProcessor
 from .utils import get_logger
 
 
@@ -21,7 +30,7 @@ class DataStore:
     bigquery = "bigquery"
 
 
-def get_batch_reader(
+def get_client(
     datastore: str,
     credential_path: str,
     table_name: str,
@@ -37,7 +46,7 @@ def get_batch_reader(
     faucet_batch_serving_url: str = None,
     faucet_project: str = None,
 ):
-    """Get a DataReader object.
+    """Get the Faucet client.
 
     Args:
         datastore: Datastore fetching data from (i.e. "bigquery").
@@ -142,6 +151,10 @@ class DataReader:
         self.epochs = epochs
         self.current_epoch_num = 0
 
+        # Preprocessing specifications & preprocessor net
+        self.preproc_specifications = None
+        self.preprocessor_net = None
+
     def _get_client(self, credential_path: str):
         raise NotImplementedError
 
@@ -195,12 +208,10 @@ class DataReader:
             return None, True
 
         return_dict = {
-            "features_df": pd.DataFrame(chunk_df.features.values.tolist())[
+            "features": pd.DataFrame(chunk_df.features.values.tolist())[
                 start_idx:end_idx
             ],
-            "labels_df": pd.DataFrame(chunk_df.labels.values.tolist())[
-                start_idx:end_idx
-            ],
+            "labels": pd.DataFrame(chunk_df.labels.values.tolist())[start_idx:end_idx],
             "batch_num": (self.current_batch_num + 1)
             + ((self.current_epoch_num - 1) * self.batches_per_epoch),
             "batches_per_epoch": self.batches_per_epoch,
@@ -264,21 +275,24 @@ class DataReader:
         num_rows = self._set_epoch_state(train=True)
         logger.info(f"Epoch {self.current_epoch_num} contains {num_rows} rows.")
 
-    def get_batch(self, eval: bool = False) -> Dict:
+    def get_batch(self, preprocess: bool = False, eval: bool = False) -> Dict:
         """Get a batch of data from the table.
 
         Args:
+            preprocess: Whether or not to preprocess this batch using the
+                preprocessor_net.
             eval: Whether or not this batch is used for evaluation.
 
         Returns:
             Dict {
-                "features_df": pd.DataFrame,  # dataframe of featuers
-                "labels_df": pd.DataFrame,  # dataframe of labels
+                "features": pd.DataFrame or Torch.Tensor,
+                "labels": pd.DataFrame or Torch.Tensor,
                 "batch_num": int,  # current batch number
                 "batches_per_epoch": int,  # batches in the epoch
             }
 
         """
+
         if (self.completed_chunks + self.failed_chunks) == self.num_chunks:
             return None
 
@@ -297,7 +311,118 @@ class DataReader:
             self.batch_end_idx = self.batch_start_idx + self.batch_size
             self.completed_chunks += 1
 
+        if preprocess:
+            assert (
+                self.preprocessor_net is not None
+            ), "`preprocessor_net` not defined. Create preprocessing specs before trying to get batch."
+            features, labels = self.preprocess_batch(
+                batch_dict["features"], batch_dict["labels"]
+            )
+            batch_dict["features"] = features
+            batch_dict["labels"] = labels
+
         return batch_dict
+
+    def gen_preprocess_specs_and_net(
+        self,
+        exclude_features: List[str] = [],
+        sample_size: int = 10000,
+        max_unique_enum_values: int = 20,
+        quantile_size: int = 20,
+        quantile_k2_threshold: int = 1000.0,
+        skip_box_cox: bool = False,
+        skip_quantiles: bool = True,
+        feature_overrides: Dict[str, str] = {},
+    ) -> Tuple[Dict[str, NormalizationParameters], Preprocessor]:
+        """Generate preprocessing specifications for each feature in the
+        training data and a PyTorch net that uses those specifications to do
+        the preprocessing.
+
+        Args:
+            exclude_features: List of features to exclude from training data.
+            sample_size: How many rows to use when computing stats (mean, stddev, etc.)
+                for features.
+            max_unique_enum_values: Max cardinality of feature to be treated as
+                enum.
+            quantile_size: Number of buckets when discretizing quanitle data.
+            quantile_k2_threshold: Boxcox transform K2 threshold.
+            skip_box_cox: Skip boxcox transformations.
+            skip_quantiles: Skip quantile transformations.
+            feature_overrides: Manually override feature type insteas of inferring
+                it from the data.
+
+        Returns:
+            Tuple[
+                Dict {
+                    "feature_a": {...}, "feature_b": {...},
+                },
+                Preprocessor,
+            ]
+
+        """
+
+        data_df = self._get_data_to_create_norm(sample_size)
+        self.preproc_specifications = get_norm_metadata_dict(
+            data_df=data_df,
+            exclude_features=exclude_features,
+            skip_preprocessing=False,
+            feature_overrides=feature_overrides,
+            max_unique_enum_values=max_unique_enum_values,
+            quantile_size=quantile_size,
+            quantile_k2_threshold=quantile_k2_threshold,
+            skip_box_cox=skip_box_cox,
+            skip_quantiles=skip_quantiles,
+        )
+
+        preprocessor_net = self._create_preprocessor(self.preproc_specifications)
+        return self.preproc_specifications, preprocessor_net
+
+    def _create_preprocessor(
+        self, preproc_specifications: Dict[str, NormalizationParameters]
+    ) -> Preprocessor:
+        """Creates PyTorch net used to preprocess raw features.
+
+        Args:
+            preproc_specifications: Dict of preprocessing specifications
+                generated by running `gen_preprocess_spec_for_features`.
+
+        Returns:
+            Preprocessor: A PyTorch net that knows how to preprocess a feature.
+
+        """
+        assert (
+            preproc_specifications is not None
+        ), "Run `gen_preprocess_spec_for_features` before `gen_preprocess_net`."
+
+        self.preprocessor_net = Preprocessor(preproc_specifications)
+        sorted_features, _ = sort_features_by_normalization(
+            self.preprocessor_net.normalization_parameters
+        )
+        assert sorted_features == self.preprocessor_net.sorted_features
+        self.sparse_to_dense = PandasSparseToDenseProcessor(sorted_features)
+        return self.preprocessor_net
+
+    def preprocess_batch(
+        self, features_df: pd.DataFrame, labels_df: pd.DataFrame = None
+    ) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
+        """Converts a sparse training batch to a dense preprocessed batch.
+
+        Args:
+            features_df: Dataframe of features.
+            labels_df: Dataframe of labels.
+
+        Returns:
+            Tuple of dense Torch tensors (training data and labels).
+        """
+        if labels_df is None:
+            labels = None
+        else:
+            labels = {
+                label_name: torch.tensor(labels_df.values, dtype=torch.float)
+                for label_name in labels_df.columns
+            }
+        dense_batch, dense_presence = self.sparse_to_dense.process(features_df)
+        return self.preprocessor_net(dense_batch, dense_presence), labels
 
 
 class BigQueryReader(DataReader):
@@ -386,6 +511,16 @@ class BigQueryReader(DataReader):
         tmp_tbl = query_job.result(page_size=self.chunk_size)
         logger.info(f"Temp table generated. Took {round(time.time() - start, 2)}s.")
         return (tmp_tbl.total_rows, tmp_tbl._to_dataframe_iterable(dtypes={}))
+
+    def _get_data_to_create_norm(self, sample_size: int) -> pd.DataFrame:
+        # assumes training data is already shuffled
+        query = f"""
+        select
+            features.*
+        from `{self.table_name}`
+        limit {sample_size}
+        """
+        return self.adhoc_query(query)
 
     @retry(tries=3, delay=1, backoff=2, logger=logger)
     def adhoc_query(self, query: str) -> pd.DataFrame:
