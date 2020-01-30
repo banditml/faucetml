@@ -1,6 +1,7 @@
 
 
 # Faucet ML
+[![PyPI version](https://badge.fury.io/py/faucetml.svg)](https://badge.fury.io/py/faucetml)
 
 Faucet ML is a Python package that enables high speed mini-batch data reading & preprocessing from BigQuery for machine learning model training.
 
